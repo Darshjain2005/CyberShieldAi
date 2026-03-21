@@ -179,7 +179,7 @@ const FeedItem = ({ type, text, time }) => {
         <span className="font-bold text-xs uppercase">{type}</span>
         <span className="text-xs font-mono opacity-70">{time}</span>
       </div>
-      <div className="text-sm text-gray-300">{text}</div>
+      <div className={`text-sm ${type === 'CRITICAL' ? 'text-cyber-neonRed font-bold drop-shadow-[0_0_5px_rgba(255,0,60,0.5)]' : 'text-gray-300'}`}>{text}</div>
     </div>
   );
 }

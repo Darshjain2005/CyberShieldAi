@@ -50,7 +50,12 @@ router.post('/scan', upload.single('file'), async (req, res) => {
       const cached = await pool.query('SELECT * FROM scans WHERE hash = $1 LIMIT 1', [sha256]);
       if (cached.rows.length > 0) {
         const scan = cached.rows[0];
-        await logActivity(req.io, 'INFO', `File matched in cache: ${originalname}`);
+        
+        if (scan.is_malicious) {
+           await logActivity(req.io, 'CRITICAL', `[THREAT DETECTED] Cached malware signature matched for: ${originalname}`);
+        } else {
+           await logActivity(req.io, 'INFO', `File matched in safe cache: ${originalname}`);
+        }
         return res.json({
           success: true,
           data: {
@@ -209,11 +214,15 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const strings = sampleBuffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
         
         try {
+          // Hardcode obvious checks first for instant detection and to save tokens
+          const lowerStrings = strings.toLowerCase() + originalname.toLowerCase();
+          const isHardcodedFake = lowerStrings.includes('midjourney') || lowerStrings.includes('stable diffusion') || lowerStrings.includes('dall-e') || lowerStrings.includes('ai-generated');
+
           const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
             model: 'llama-3.3-70b-versatile',
             messages: [
-               { role: 'system', content: 'You are an AI forensics expert checking image files. Analyze this extracted metadata block for signs of deepfake manipulation, AI generation (Midjourney, Stable Diffusion), or editing software (Photoshop). CRITICAL INSTRUCTION: Authentic photos always have smartphone/camera hardware EXIF headers (e.g., Apple, Samsung, Canon, Shutter Speed). If these natural camera markers are COMPLETELY MISSING and the file feels synthetically clean or only contains web/software export tags, you MUST flag it as AI-Generated/Manipulated by setting "isPhishing": true and return a high confidence. Return ONLY a valid JSON object without markdown formatting: {"isPhishing": true, "confidence": 95, "explanation": "Brief reasoning based on metadata (e.g., missing natural EXIF camera headers strongly suggests AI generation)."}' },
-               { role: 'user', content: `Image hash: ${sha256}. Extracted Binary Strings:\n${strings.substring(0, 3000)}` }
+               { role: 'system', content: 'You are a STRICT binary forensics parser checking for AI generative image watermarks. CRITICAL INSTRUCTION: You MUST output {"isPhishing": false, "confidence": 99, "explanation": "Authentic photograph/image. No generative AI or deepfake signatures detected."} UNLESS the provided text contains EXACT strings like "Midjourney", "Stable Diffusion", "DALL-E", "AI-Generated", "RunwayML", or "DeepFace". Do not guess. Do not flag Photoshop alone. Missing EXIF means NOTHING. If you do not see a literal generative AI stamp, it is SAFE.' },
+               { role: 'user', content: `Filename: ${originalname}. Pre-scanned flag: ${isHardcodedFake}. Extracted Binary Strings:\n${strings.substring(0, 1500)}` }
             ]
           }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
@@ -237,11 +246,14 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const sampleBuffer = buffer.subarray(0, sampleSize);
         const strings = sampleBuffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
         
+        const lowerStringsVideo = strings.toLowerCase() + originalname.toLowerCase();
+        const isHardcodedFakeVideo = lowerStringsVideo.includes('runwayml') || lowerStringsVideo.includes('deepface') || lowerStringsVideo.includes('sora') || lowerStringsVideo.includes('ai-generated') || lowerStringsVideo.includes('synthesia');
+
         const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
           model: 'llama-3.3-70b-versatile',
           messages: [
-             { role: 'system', content: 'You are identifying deepfake videos based on file metadata strings. Look for software signatures like Adobe Premiere, Python, FFmpeg, Lavf, deepfacelab, etc. Respond ONLY in valid JSON with no markdown: {"isPhishing": true, "confidence": 95, "explanation": "Brief reasoning based on metadata."}' },
-             { role: 'user', content: `Video hash: ${sha256}. Metadata strings: ${strings.substring(0, 1500)}` }
+             { role: 'system', content: 'You are a STRICT binary forensics parser checking for deepfake video watermarks. CRITICAL INSTRUCTION: You MUST output {"isPhishing": false, "confidence": 99, "explanation": "Authentic video capture. No generative AI or deepfake software tokens detected."} UNLESS the text contains literal generative AI engine stamps like "RunwayML", "Sora", "DeepFaceLab", "Synthesia", or "AI-Generated". Missing metadata is completely normal. Do not guess. If there is no explicit generative AI string, it evaluates to SAFE.' },
+             { role: 'user', content: `Filename: ${originalname}. Pre-scanned flag: ${isHardcodedFakeVideo}. Metadata strings: ${strings.substring(0, 1000)}` }
           ]
         }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
