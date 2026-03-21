@@ -187,6 +187,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
       
       const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
         model: 'llama-3.3-70b-versatile',
+        response_format: { type: 'json_object' },
         messages: [
            { role: 'system', content: 'You are an elite cybersecurity AI. Analyze the text and determine if it is phishing/scam. Respond ONLY in valid JSON format with NO markdown code blocks. Example: {"isPhishing": true, "confidence": 95, "explanation": "Brief reasoning with highlighted words wrapped in <b>tags</b>."}' },
            { role: 'user', content: text }
@@ -194,8 +195,8 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
       }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
       let content = groqResponse.data.choices[0].message.content;
-      content = content.replace(/```json/g, '').replace(/```/g, '').trim();
-      const result = JSON.parse(content);
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
       return res.json({ success: true, data: result });
     }
 
@@ -218,17 +219,27 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
           const lowerStrings = strings.toLowerCase() + originalname.toLowerCase();
           const isHardcodedFake = lowerStrings.includes('midjourney') || lowerStrings.includes('stable diffusion') || lowerStrings.includes('dall-e') || lowerStrings.includes('ai-generated');
 
+          if (isHardcodedFake) {
+            return res.json({ success: true, data: { isPhishing: true, confidence: 95, explanation: "Deepfake threat detected: Generative AI metadata or watermark identified." } });
+          }
+
+          const base64Image = buffer.toString('base64');
           const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-            model: 'llama-3.3-70b-versatile',
+            model: 'llama-3.2-90b-vision-preview',
             messages: [
-               { role: 'system', content: 'You are a STRICT binary forensics parser checking for AI generative image watermarks. CRITICAL INSTRUCTION: You MUST output {"isPhishing": false, "confidence": 99, "explanation": "Authentic photograph/image. No generative AI or deepfake signatures detected."} UNLESS the provided text contains EXACT strings like "Midjourney", "Stable Diffusion", "DALL-E", "AI-Generated", "RunwayML", or "DeepFace". Do not guess. Do not flag Photoshop alone. Missing EXIF means NOTHING. If you do not see a literal generative AI stamp, it is SAFE.' },
-               { role: 'user', content: `Filename: ${originalname}. Pre-scanned flag: ${isHardcodedFake}. Extracted Binary Strings:\n${strings.substring(0, 1500)}` }
+               {
+                 role: 'user',
+                 content: [
+                   { type: "text", text: 'You are an elite cyber forensics AI. Analyze this image to determine if it is an AI-generated deepfake. Look for unnatural rendering, distorted text, spatial inconsistencies, algorithmic artifacts, weird hands/eyes, or synthetic composition. You MUST respond ONLY in valid JSON format: {"isPhishing": true, "confidence": 95, "explanation": "Detailed visual evidence of AI generation."} if it is a deepfake/AI, or {"isPhishing": false, "confidence": 95, "explanation": "Authentic photograph with natural lighting, coherent structures, and no visible AI artifacts."} if it is real. Be skeptical.' },
+                   { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } }
+                 ]
+               }
             ]
           }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
           let content = groqResponse.data.choices[0].message.content;
-          content = content.replace(/```json/g, '').replace(/```/g, '').trim();
-          const result = JSON.parse(content);
+          const jsonMatch = content.match(/\{[\s\S]*\}/);
+          const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
           return res.json({ success: true, data: result });
         } catch (visionErr) {
           console.error('Image Meta API error:', visionErr.response?.data || visionErr.message);
@@ -247,19 +258,24 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const strings = sampleBuffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
         
         const lowerStringsVideo = strings.toLowerCase() + originalname.toLowerCase();
-        const isHardcodedFakeVideo = lowerStringsVideo.includes('runwayml') || lowerStringsVideo.includes('deepface') || lowerStringsVideo.includes('sora') || lowerStringsVideo.includes('ai-generated') || lowerStringsVideo.includes('synthesia');
+        const isHardcodedFakeVideo = lowerStringsVideo.includes('runwayml') || lowerStringsVideo.includes('deepface') || lowerStringsVideo.includes('sora') || lowerStringsVideo.includes('ai-generated') || lowerStringsVideo.includes('synthesia') || lowerStringsVideo.includes('heygen') || lowerStringsVideo.includes('deepfake');
+
+        if (isHardcodedFakeVideo) {
+             return res.json({ success: true, data: { isPhishing: true, confidence: 95, explanation: "Deepfake threat detected: Generative AI metadata or watermark identified." } });
+        }
 
         const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
           model: 'llama-3.3-70b-versatile',
+          response_format: { type: 'json_object' },
           messages: [
-             { role: 'system', content: 'You are a STRICT binary forensics parser checking for deepfake video watermarks. CRITICAL INSTRUCTION: You MUST output {"isPhishing": false, "confidence": 99, "explanation": "Authentic video capture. No generative AI or deepfake software tokens detected."} UNLESS the text contains literal generative AI engine stamps like "RunwayML", "Sora", "DeepFaceLab", "Synthesia", or "AI-Generated". Missing metadata is completely normal. Do not guess. If there is no explicit generative AI string, it evaluates to SAFE.' },
-             { role: 'user', content: `Filename: ${originalname}. Pre-scanned flag: ${isHardcodedFakeVideo}. Metadata strings: ${strings.substring(0, 1000)}` }
+             { role: 'system', content: 'You are a STRICT binary forensics parser checking for deepfake video watermarks. Output {"isPhishing": true, "confidence": 95, "explanation": "Generative AI or deepfake signature detected."} if the metadata contains suspicious tokens, AI engine stamps, or irregularities indicating synthetic media. Otherwise, output {"isPhishing": false, "confidence": 99, "explanation": "Authentic video capture. No generative AI tokens detected."}. Be highly suspicious of any generic or stripped metadata. Respond ONLY with valid JSON.' },
+             { role: 'user', content: `Filename: ${originalname}. Metadata strings: ${strings.substring(0, 1000)}` }
           ]
         }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
         let content = groqResponse.data.choices[0].message.content;
-        content = content.replace(/```json/g, '').replace(/```/g, '').trim();
-        const result = JSON.parse(content);
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
         return res.json({ success: true, data: result });
     }
     else {
@@ -267,6 +283,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const fileText = buffer.toString('utf8').substring(0, 5000); // Take first 5000 chars
         const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
           model: 'llama-3.3-70b-versatile',
+          response_format: { type: 'json_object' },
           messages: [
              { role: 'system', content: 'You are analyzing a raw email/document for phishing, malicious links, and urgency loops. Respond ONLY in valid JSON with no markdown blocks: {"isPhishing": true, "confidence": 95, "explanation": "Brief reasoning with highlighted words wrapped in <b>tags</b>."}' },
              { role: 'user', content: `Filename: ${originalname}\nContent:\n${fileText}` }
@@ -274,8 +291,8 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
         let content = groqResponse.data.choices[0].message.content;
-        content = content.replace(/```json/g, '').replace(/```/g, '').trim();
-        const result = JSON.parse(content);
+        const jsonMatch = content.match(/\{[\s\S]*\}/);
+        const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
         return res.json({ success: true, data: result });
     }
   } catch (err) {
