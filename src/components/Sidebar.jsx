@@ -183,7 +183,7 @@ const NavItem = ({ item, index }) => {
             <span
               className="font-mono font-bold tracking-wide truncate transition-all duration-200"
               style={{
-                fontSize: 11,
+                fontSize: 13,
                 color: isActive ? item.accent : hovered ? '#64748b' : '#334155',
                 letterSpacing: '0.05em',
               }}
@@ -270,12 +270,12 @@ const Sidebar = () => {
           <div>
             <h1
               className="font-display font-black tracking-widest"
-              style={{ fontSize: 13, color: '#f1f5f9', letterSpacing: '0.08em' }}
+              style={{ fontSize: 15, color: '#f1f5f9', letterSpacing: '0.08em' }}
             >
               CYBER
               <span style={{ color: '#00f3ff', textShadow: '0 0 12px rgba(0,243,255,0.6)' }}>SHIELD</span>
             </h1>
-            <p className="font-mono uppercase tracking-widest" style={{ fontSize: 7, color: '#1e293b', marginTop: 1 }}>
+            <p className="font-mono uppercase tracking-widest" style={{ fontSize: 11, color: '#334155', marginTop: 1 }}>
               AI Security Platform
             </p>
           </div>
@@ -285,7 +285,7 @@ const Sidebar = () => {
         <div className="px-5 pt-5 pb-2">
           <div className="flex items-center gap-2">
             <div style={{ width: 16, height: 1, background: 'rgba(0,243,255,0.3)' }} />
-            <span className="font-mono uppercase tracking-[0.2em]" style={{ fontSize: 8, color: '#1e293b' }}>
+            <span className="font-mono uppercase tracking-[0.2em]" style={{ fontSize: 12, color: '#475569' }}>
               Navigation
             </span>
           </div>
@@ -311,7 +311,7 @@ const Sidebar = () => {
         >
           {/* status header */}
           <div className="flex items-center justify-between mb-3">
-            <span className="font-mono uppercase tracking-widest" style={{ fontSize: 8, color: '#1e293b' }}>
+            <span className="font-mono uppercase tracking-widest" style={{ fontSize: 12, color: '#475569' }}>
               System Status
             </span>
             <div className="flex items-center gap-1.5">
@@ -321,7 +321,7 @@ const Sidebar = () => {
                 animate={{ opacity: [1, 0.3, 1] }}
                 transition={{ duration: 1.5, repeat: Infinity }}
               />
-              <span className="font-mono font-bold uppercase tracking-widest" style={{ fontSize: 7, color: '#39ff14' }}>
+              <span className="font-mono font-bold uppercase tracking-widest" style={{ fontSize: 11, color: '#39ff14' }}>
                 Online
               </span>
             </div>
@@ -338,17 +338,17 @@ const Sidebar = () => {
               className="flex items-center justify-between py-1.5"
               style={{ borderBottom: '1px solid rgba(255,255,255,0.03)' }}
             >
-              <span className="font-mono uppercase tracking-widest" style={{ fontSize: 8, color: '#1e293b' }}>{label}</span>
-              <span className="font-mono font-bold" style={{ fontSize: 9, color: '#334155' }}>{val}</span>
+              <span className="font-mono uppercase tracking-widest" style={{ fontSize: 12, color: '#475569' }}>{label}</span>
+              <span className="font-mono font-bold" style={{ fontSize: 13, color: '#64748b' }}>{val}</span>
             </div>
           ))}
 
           {/* live clock */}
           <div className="flex items-center justify-between pt-2">
-            <span className="font-mono uppercase tracking-widest" style={{ fontSize: 8, color: '#1e293b' }}>Time</span>
+            <span className="font-mono uppercase tracking-widest" style={{ fontSize: 12, color: '#475569' }}>Time</span>
             <span
               className="font-mono font-bold"
-              style={{ fontSize: 9, color: '#00f3ff', fontVariantNumeric: 'tabular-nums' }}
+              style={{ fontSize: 11, color: '#00f3ff', fontVariantNumeric: 'tabular-nums' }}
             >
               {time.toLocaleTimeString('en-US', { hour12: false })}
             </span>
@@ -360,10 +360,10 @@ const Sidebar = () => {
           className="px-5 py-3 flex items-center justify-between"
           style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}
         >
-          <span className="font-mono uppercase tracking-widest" style={{ fontSize: 7, color: '#0f172a' }}>
+          <span className="font-mono uppercase tracking-widest" style={{ fontSize: 11, color: '#334155' }}>
             v2.0.0
           </span>
-          <span className="font-mono uppercase tracking-widest" style={{ fontSize: 7, color: '#0f172a' }}>
+          <span className="font-mono uppercase tracking-widest" style={{ fontSize: 11, color: '#334155' }}>
             CyberShield AI
           </span>
         </div>
