@@ -4,8 +4,9 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
 import apiRoutes from './routes/api.js';
-import cveRoutes from './routes/cve.js'
+import cveRoutes from './routes/cve.js';
 import policyRoutes from './routes/policy.js';
+import { initDB } from './db.js';
 
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -50,6 +51,10 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 5000;
 
-httpServer.listen(PORT, () => {
-  console.log(`[+] Server running on port ${PORT}`);
-});
+// Initialize DB first, then start server
+(async () => {
+  await initDB();
+  httpServer.listen(PORT, () => {
+    console.log(`[+] Server running on port ${PORT}`);
+  });
+})();
