@@ -3,58 +3,57 @@ import cors from 'cors';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import dotenv from 'dotenv';
+
 import apiRoutes from './routes/api.js';
 import cveRoutes from './routes/cve.js';
 import policyRoutes from './routes/policy.js';
 import { initDB } from './db.js';
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-dotenv.config({ path: path.join(__dirname, '../.env') });
+dotenv.config(); // ✅ FIXED (no path)
 
 const app = express();
 const httpServer = createServer(app);
 
-// Setup Socket.IO for real-time dashboard updates
+// Socket.IO setup
 const io = new Server(httpServer, {
   cors: {
-    origin: '*', // Allow all origins for the hackathon
-    methods: ['GET', 'POST']
-  }
+    origin: '*',
+    methods: ['GET', 'POST'],
+  },
 });
 
+// Middleware
 app.use(cors());
 app.use(express.json());
-app.use('/api', cveRoutes);
-app.use('/api', policyRoutes);
 
-// Pass io instance to routes via middleware
+// Attach socket instance to routes
 app.use((req, res, next) => {
   req.io = io;
   next();
 });
 
-// Use API routes
+// Routes
 app.use('/api', apiRoutes);
+app.use('/api', cveRoutes);
+app.use('/api', policyRoutes);
 
-// Socket.io connection logic
+// Socket connection
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);
+
   socket.on('disconnect', () => {
     console.log('Client disconnected:', socket.id);
   });
 });
 
+// Port
 const PORT = process.env.PORT || 5000;
 
-// Initialize DB first, then start server
+// Start server after DB init
 (async () => {
   await initDB();
+
   httpServer.listen(PORT, () => {
-    console.log(`[+] Server running on port ${PORT}`);
+    console.log(`🚀 Server running on port ${PORT}`);
   });
 })();
