@@ -1,15 +1,34 @@
 import pkg from 'pg';
 const { Pool } = pkg;
 import dotenv from 'dotenv';
-dotenv.config({ path: '../.env' });
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '../.env') });
+
+// Guard: exit immediately if DATABASE_URL is not set
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL is missing. Set it in your environment variables.');
+  process.exit(1);
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false, // Required for Neon DB / Render
+  },
 });
 
 const initDB = async () => {
+  let client;
   try {
-    await pool.query(`
+    client = await pool.connect();
+    console.log('✅ Database connected successfully');
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS scans (
         id SERIAL PRIMARY KEY,
         filename VARCHAR(255) NOT NULL,
@@ -27,12 +46,15 @@ const initDB = async () => {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
-    console.log('Database tables initialized');
+
+    console.log('✅ Database tables initialized');
   } catch (err) {
-    console.error('Error initializing database tables:', err);
+    console.error('❌ Error connecting to database:', err.message);
+    process.exit(1); // Stop the server if DB connection fails
+  } finally {
+    if (client) client.release();
   }
 };
 
-initDB();
-
+export { pool, initDB };
 export default pool;
