@@ -232,7 +232,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
               response_format: { type: 'json_object' },
               max_tokens: 256,
               messages: [
-                { role: 'system', content: 'You are a forensic metadata analyst. Large images cannot be sent to vision AI. Analyze the filename and embedded metadata strings for any AI generation markers (MidJourney, Stable Diffusion, DALL-E, Firefly, etc). Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 0-100, "explanation": "brief reason"}' },
+                { role: 'system', content: 'You are a forensic metadata analyst. Analyze the filename and embedded metadata strings. Return {"isPhishing": true, "confidence": 90, "explanation": "AI marker: [name]"} ONLY if you find EXPLICIT AI generation markers like MidJourney, Stable Diffusion, DALL-E, Firefly, ComfyUI, etc. For authentic photos (from cameras, embedded standard EXIF data, or clean metadata), you MUST return {"isPhishing": false, "confidence": 95, "explanation": "Authentic image. No AI generation metadata markers found."}. CRITICAL: Generic or missing metadata is completely normal for real photos. Do not flag absence of metadata as suspicious. Respond ONLY in valid JSON.' },
                 { role: 'user', content: `Filename: ${originalname}\nMetadata strings: ${strings.substring(0, 2000)}` }
               ]
             }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
@@ -251,7 +251,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
                {
                  role: 'user',
                  content: [
-                   { type: "text", text: 'You are an elite cyber forensics AI. Analyze this image to determine if it is an AI-generated deepfake. Look for unnatural rendering, distorted text, spatial inconsistencies, algorithmic artifacts, weird hands/eyes, or synthetic composition. You MUST respond ONLY in valid JSON format: {"isPhishing": true, "confidence": 95, "explanation": "Detailed visual evidence of AI generation."} if it is a deepfake/AI, or {"isPhishing": false, "confidence": 95, "explanation": "Authentic photograph with natural lighting, coherent structures, and no visible AI artifacts."} if it is real. Be skeptical.' },
+                   { type: "text", text: 'You are a cyber forensics vision AI. Analyze this image to determine if it is an AI-generated deepfake. If the image is AI-generated, identify specific visual artifacts (unnatural rendering, distorted text, spatial inconsistencies, weird hands/eyes, or synthetic composition) and return EXACTLY: {"isPhishing": true, "confidence": 90-99, "explanation": "Deepfake detected: [describe specific visual artifacts]"}. If the image is a real, authentic photograph (natural lighting, coherent structures, physically consistent subjects), you MUST return EXACTLY: {"isPhishing": false, "confidence": 95, "explanation": "Authentic photograph. Natural lighting and coherent physical structures with no visible AI artifacts."}. CRITICAL: Do not be overly skeptical of normal photos. Only flag clear, explicit AI generation artifacts. Respond ONLY in valid JSON.' },
                    { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } }
                  ]
                }
@@ -272,7 +272,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
               response_format: { type: 'json_object' },
               max_tokens: 256,
               messages: [
-                { role: 'system', content: 'You are a forensic metadata analyst. The image could not be processed by vision AI. Analyze the filename and any embedded metadata strings for AI generation markers (MidJourney, DALL-E, Stable Diffusion, Firefly, etc.). Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 0-100, "explanation": "brief reason"}' },
+                { role: 'system', content: 'You are a forensic metadata analyst. Analyze the filename and embedded metadata strings. Return {"isPhishing": true, "confidence": 90, "explanation": "AI marker: [name]"} ONLY if you find EXPLICIT AI generation markers like MidJourney, Stable Diffusion, DALL-E, Firefly, ComfyUI, etc. For authentic photos (from cameras, embedded standard EXIF data, or clean metadata), you MUST return {"isPhishing": false, "confidence": 95, "explanation": "Authentic image. No AI generation metadata markers found."}. CRITICAL: Generic or missing metadata is completely normal for real photos. Do not flag absence of metadata as suspicious. Respond ONLY in valid JSON.' },
                 { role: 'user', content: `Filename: ${originalname}\nMetadata strings: ${strings.substring(0, 2000)}` }
               ]
             }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
