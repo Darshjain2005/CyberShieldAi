@@ -209,11 +209,16 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const hashSum = crypto.createHash('sha256');
         hashSum.update(buffer);
 
-        // Extract printable strings from first 100KB to check for EXIF/manipulation markers
-        const sampleSize = Math.min(buffer.length, 100000);
-        const sampleBuffer = buffer.subarray(0, sampleSize);
-        const strings = sampleBuffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-        
+        // Extract printable strings from both the start and end of the file to check for EXIF/manipulation markers
+        let strings = '';
+        if (buffer.length <= 200000) {
+            strings = buffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+        } else {
+            const startStr = buffer.subarray(0, 100000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+            const endStr = buffer.subarray(buffer.length - 100000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+            strings = startStr + ' ' + endStr;
+        }
+
         try {
           // Hardcode obvious checks first for instant detection and to save tokens
           const lowerStrings = strings.toLowerCase() + originalname.toLowerCase();
@@ -287,10 +292,15 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         }
     } 
     else if (mimetype.startsWith('video/')) {
-        // Extract printable strings from first 200KB for better metadata box coverage
-        const sampleSize = Math.min(buffer.length, 200000);
-        const sampleBuffer = buffer.subarray(0, sampleSize);
-        const strings = sampleBuffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+        // Extract printable strings from first 250KB and last 250KB for better metadata box coverage (moov, udta, XMP)
+        let strings = '';
+        if (buffer.length <= 500000) {
+            strings = buffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+        } else {
+            const startStr = buffer.subarray(0, 250000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+            const endStr = buffer.subarray(buffer.length - 250000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
+            strings = startStr + ' ' + endStr;
+        }
         const lowerStringsVideo = strings.toLowerCase() + originalname.toLowerCase();
 
         // ── Tier 1: Explicit AI tool signatures in metadata or filename ──
