@@ -223,14 +223,14 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
           // Llama 4 Scout's base64 limit is 4MB — fall back to metadata heuristics for larger images
           const MAX_BASE64_BYTES = 4 * 1024 * 1024;
           if (buffer.length > MAX_BASE64_BYTES) {
-            // Use text-only model to analyze metadata strings for AI generation markers
+            // Use text-only model to analyze structural metadata strings for anomalies
             const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
               model: 'llama-3.3-70b-versatile',
               response_format: { type: 'json_object' },
-              max_tokens: 256,
+              max_tokens: 300,
               messages: [
-                { role: 'system', content: 'You are a forensic metadata analyst. Analyze the filename and embedded metadata strings. Return {"isPhishing": true, "confidence": 90, "explanation": "AI marker: [name]"} ONLY if you find EXPLICIT AI generation markers like MidJourney, Stable Diffusion, DALL-E, Firefly, ComfyUI, etc. For authentic photos (from cameras, embedded standard EXIF data, or clean metadata), you MUST return {"isPhishing": false, "confidence": 95, "explanation": "Authentic image. No AI generation metadata markers found."}. CRITICAL: Generic or missing metadata is completely normal for real photos. Do not flag absence of metadata as suspicious. Respond ONLY in valid JSON.' },
-                { role: 'user', content: `Filename: ${originalname}\nMetadata strings: ${strings.substring(0, 2000)}` }
+                { role: 'system', content: 'You are an advanced digital forensics expert. Analyze the filename and extracted metadata strings from this image. Look for structural anomalies, stripped EXIF data, generic software descriptors in place of camera hardware signatures, or subtle XMP/RDF modifications typical of AI pipelines. Evaluate the probability of synthetic generation. Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail your forensic findings>"} ' },
+                { role: 'user', content: `Filename: ${originalname}\nMetadata strings sample: ${strings.substring(0, 2500)}` }
               ]
             }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
 
@@ -248,7 +248,7 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
                {
                  role: 'user',
                  content: [
-                   { type: "text", text: 'You are a cyber forensics vision AI. Analyze this image to determine if it is an AI-generated deepfake. If the image is AI-generated, identify specific visual artifacts (unnatural rendering, distorted text, spatial inconsistencies, weird hands/eyes, or synthetic composition) and return EXACTLY: {"isPhishing": true, "confidence": 90-99, "explanation": "Deepfake detected: [describe specific visual artifacts]"}. If the image is a real, authentic photograph (natural lighting, coherent structures, physically consistent subjects), you MUST return EXACTLY: {"isPhishing": false, "confidence": 95, "explanation": "Authentic photograph. Natural lighting and coherent physical structures with no visible AI artifacts."}. CRITICAL: Do not be overly skeptical of normal photos. Only flag clear, explicit AI generation artifacts. Respond ONLY in valid JSON.' },
+                   { type: "text", text: 'You are a cyber forensics vision AI evaluator. Thoroughly analyze this image to detect synthetic deepfakes or gen-AI output. Look deeply for structural inconsistencies, asymmetrical pupils, floating elements, impossible geometries, unnatural skin textures, or mismatched background lighting. If you find anomalies, flag it as a deepfake. If it holds up to extreme logical scrutiny and looks perfectly physically authentic, mark it safe. Return exactly and ONLY valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<describe exact visual triggers>"} ' },
                    { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } }
                  ]
                }
@@ -269,8 +269,8 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
               response_format: { type: 'json_object' },
               max_tokens: 256,
               messages: [
-                { role: 'system', content: 'You are a forensic metadata analyst. Analyze the filename and embedded metadata strings. Return {"isPhishing": true, "confidence": 90, "explanation": "AI marker: [name]"} ONLY if you find EXPLICIT AI generation markers like MidJourney, Stable Diffusion, DALL-E, Firefly, ComfyUI, etc. For authentic photos (from cameras, embedded standard EXIF data, or clean metadata), you MUST return {"isPhishing": false, "confidence": 95, "explanation": "Authentic image. No AI generation metadata markers found."}. CRITICAL: Generic or missing metadata is completely normal for real photos. Do not flag absence of metadata as suspicious. Respond ONLY in valid JSON.' },
-                { role: 'user', content: `Filename: ${originalname}\nMetadata strings: ${strings.substring(0, 2000)}` }
+                { role: 'system', content: 'You are an advanced digital forensics expert. Analyze the filename and extracted metadata strings from this image. Look for structural anomalies, stripped EXIF data, generic software descriptors in place of camera hardware signatures, or subtle XMP/RDF modifications typical of AI pipelines. Evaluate the probability of synthetic generation. Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail your forensic findings>"} ' },
+                { role: 'user', content: `Filename: ${originalname}\nMetadata strings sample: ${strings.substring(0, 2500)}` }
               ]
             }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
             let fbContent = fallbackRes.data.choices[0].message.content;
@@ -299,8 +299,8 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
           model: 'llama-3.3-70b-versatile',
           response_format: { type: 'json_object' },
           messages: [
-             { role: 'system', content: 'You are a video forensics analyst. Detect if a video was synthetically generated by an AI tool. Return {"isPhishing": true, "confidence": 90, "explanation": "AI tool: [name]"} ONLY if the metadata or filename contains EXPLICIT markers from: RunwayML, Sora, HeyGen, Synthesia, Pika, Kling, Luma AI, DeepFaceLab, FaceSwap, Stable Video Diffusion, D-ID, Elai, Colossyan, or similar AI video generation tools. For authentic videos from cameras, phones, screen recorders, or standard editors (ffmpeg, HandBrake, OBS, Premiere, DaVinci, iMovie, x264, h264, avc1, mp4a), return {"isPhishing": false, "confidence": 95, "explanation": "Authentic video. No AI synthesis markers found."}. CRITICAL: Minimal or absent metadata is completely normal for real videos. NEVER treat absence of metadata as suspicious. Only flag explicitly named AI video generation tools. Respond ONLY with valid JSON.' },
-             { role: 'user', content: `Filename: ${originalname}\nMetadata extracted: ${strings.substring(0, 1500)}` }
+             { role: 'system', content: 'You are an elite video forensics analyst. Evaluate the extracted metadata strings to determine if this video file is a synthetic deepfake. Since explicit AI names (like Sora or RunwayML) are often scrubbed, you must examine heuristic patterns: unusually neat and minimal udta/moov structures, lack of standard smartphone/camera sensor hardware signatures, over-presence of XMP/RDF rendering tags, or generic encoding blocks. Use these structural abnormalities to determine the probability of AI synthesis. Return ONLY valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail anomaly findings>"} ' },
+             { role: 'user', content: `Filename: ${originalname}\nMetadata sample: ${strings.substring(0, 2500)}` }
           ]
         }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
 
