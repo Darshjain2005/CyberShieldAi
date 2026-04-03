@@ -220,14 +220,6 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         }
 
         try {
-          // Hardcode obvious checks first for instant detection and to save tokens
-          const lowerStrings = strings.toLowerCase() + originalname.toLowerCase();
-          const isHardcodedFake = lowerStrings.includes('midjourney') || lowerStrings.includes('stable diffusion') || lowerStrings.includes('dall-e') || lowerStrings.includes('ai-generated');
-
-          if (isHardcodedFake) {
-            return res.json({ success: true, data: { isPhishing: true, confidence: 95, explanation: "Deepfake threat detected: Generative AI metadata or watermark identified." } });
-          }
-
           // Llama 4 Scout's base64 limit is 4MB — fall back to metadata heuristics for larger images
           const MAX_BASE64_BYTES = 4 * 1024 * 1024;
           if (buffer.length > MAX_BASE64_BYTES) {
@@ -301,39 +293,8 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
             const endStr = buffer.subarray(buffer.length - 250000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
             strings = startStr + ' ' + endStr;
         }
-        const lowerStringsVideo = strings.toLowerCase() + originalname.toLowerCase();
 
-        // ── Tier 1: Explicit AI tool signatures in metadata or filename ──
-        const AI_VIDEO_TOOLS = [
-          'runwayml', 'runway', 'deepface', 'sora', 'ai-generated', 'ai_generated',
-          'synthesia', 'heygen', 'deepfake', 'stable-video', 'stablevideo', 'svd',
-          'pika', 'pikalabs', 'gen-2', 'gen2', 'kling', 'lumaai', 'luma dream',
-          'minimax', 'hailuo', 'vidu', 'd-id', 'did.com', 'artflow', 'elai', 'colossyan'
-        ];
-        const detectedTool = AI_VIDEO_TOOLS.find(sig => lowerStringsVideo.includes(sig));
-        if (detectedTool) {
-          const displayName = detectedTool.charAt(0).toUpperCase() + detectedTool.slice(1);
-          return res.json({ success: true, data: { isPhishing: true, confidence: 97, explanation: `Deepfake threat detected: '${displayName}' AI video generation signature found in metadata/filename.` } });
-        }
-
-        // ── Tier 2: Heuristic scoring for suspicious metadata patterns ──
-        let suspicionScore = 0;
-        const suspicionReasons = [];
-        if (lowerStringsVideo.includes('xmp') && lowerStringsVideo.includes('rdf')) {
-          suspicionScore += 20;
-          suspicionReasons.push('XMP/RDF metadata block found (common in AI tool exports)');
-        }
-        const imgAiTools = ['comfyui', 'automatic1111', 'a1111', 'invokeai', 'novelai', 'sdxl', 'stable diffusion', 'dall-e', 'firefly', 'midjourney'];
-        const imgToolFound = imgAiTools.find(t => lowerStringsVideo.includes(t));
-        if (imgToolFound) {
-          suspicionScore += 85;
-          suspicionReasons.push(`Image-to-video AI pipeline marker found: '${imgToolFound}'`);
-        }
-        if (suspicionScore >= 70) {
-          return res.json({ success: true, data: { isPhishing: true, confidence: Math.min(95, 55 + suspicionScore), explanation: `Deepfake indicators detected: ${suspicionReasons.join('; ')}.` } });
-        }
-
-        // ── Tier 3: LLM metadata analysis with balanced prompt ──
+        // ── LLM metadata analysis with balanced prompt ──
         const groqVideoResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
           model: 'llama-3.3-70b-versatile',
           response_format: { type: 'json_object' },
