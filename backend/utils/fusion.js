@@ -53,7 +53,8 @@ export function fuseImageSignals({ elaResult, exifResult, llmResult }) {
   const fusedScore = elaComponent + exifComponent + llmComponent;
   // fusedScore is 0–100; re-map to confidence range 45–97
   const confidence = Math.min(Math.round(45 + fusedScore * 0.52), 97);
-  const isDeepfake = fusedScore > 40;
+  // Threshold lowered to 32: moderate EXIF anomaly + any LLM flag is enough to trigger
+  const isDeepfake = fusedScore > 32;
 
   return {
     isPhishing: isDeepfake,
