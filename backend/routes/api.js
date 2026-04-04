@@ -3,6 +3,10 @@ import multer from 'multer';
 import axios from 'axios';
 import FormData from 'form-data';
 import pool from '../db.js';
+import { computeELAScore } from '../utils/ela.js';
+import { scoreExifData } from '../utils/exif.js';
+import { fuseImageSignals } from '../utils/fusion.js';
+import { extractVideoFrames, analyzeVideoFrames, analyzeVideoMetadataFallback } from '../utils/video.js';
 
 const router = express.Router();
 
@@ -206,107 +210,84 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
     await logActivity(req.io, 'INFO', `Analyzing file for deepfake/phishing: ${originalname}`);
 
     if (mimetype.startsWith('image/')) {
-        const hashSum = crypto.createHash('sha256');
-        hashSum.update(buffer);
+        // ── Signal 1: EXIF heuristics (deterministic, always runs) ──
+        const exifResult = scoreExifData(buffer, originalname);
+        console.log(`[Image] EXIF score: ${exifResult.exifScore} | flags: ${exifResult.exifFlags.join(', ') || 'none'}`);
 
-        // Extract printable strings from both the start and end of the file to check for EXIF/manipulation markers
-        let strings = '';
-        if (buffer.length <= 200000) {
-            strings = buffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-        } else {
-            const startStr = buffer.subarray(0, 100000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-            const endStr = buffer.subarray(buffer.length - 100000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-            strings = startStr + ' ' + endStr;
-        }
+        // ── Signal 2: ELA Score (deterministic, always runs) ──
+        const elaResult = await computeELAScore(buffer);
+        console.log(`[Image] ELA score: ${elaResult.elaScore} | suspicious: ${elaResult.suspiciousELA}`);
 
-        try {
-          // Llama 4 Scout's base64 limit is 4MB — fall back to metadata heuristics for larger images
-          const MAX_BASE64_BYTES = 4 * 1024 * 1024;
-          if (buffer.length > MAX_BASE64_BYTES) {
-            // Use text-only model to analyze structural metadata strings for anomalies
-            const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-              model: 'llama-3.3-70b-versatile',
-              response_format: { type: 'json_object' },
-              max_tokens: 300,
-              messages: [
-                { role: 'system', content: 'You are an advanced digital forensics expert. Analyze the filename and extracted metadata strings from this image. Look for structural anomalies, stripped EXIF data, generic software descriptors in place of camera hardware signatures, or subtle XMP/RDF modifications typical of AI pipelines. Evaluate the probability of synthetic generation. Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail your forensic findings>"} ' },
-                { role: 'user', content: `Filename: ${originalname}\nMetadata strings sample: ${strings.substring(0, 2500)}` }
-              ]
-            }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
-
-            let content = groqResponse.data.choices[0].message.content;
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
-            return res.json({ success: true, data: result });
-          }
-
-          const base64Image = buffer.toString('base64');
-          const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-            model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-            max_tokens: 256,
-            messages: [
-               {
-                 role: 'user',
-                 content: [
-                   { type: "text", text: 'You are a cyber forensics vision AI evaluator. Thoroughly analyze this image to detect synthetic deepfakes or gen-AI output. Look deeply for structural inconsistencies, asymmetrical pupils, floating elements, impossible geometries, unnatural skin textures, or mismatched background lighting. If you find anomalies, flag it as a deepfake. If it holds up to extreme logical scrutiny and looks perfectly physically authentic, mark it safe. Return exactly and ONLY valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<describe exact visual triggers>"} ' },
-                   { type: "image_url", image_url: { url: `data:${mimetype};base64,${base64Image}` } }
-                 ]
-               }
-            ]
-          }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
-
-          let content = groqResponse.data.choices[0].message.content;
-          const jsonMatch = content.match(/\{[\s\S]*\}/);
-          const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
-          return res.json({ success: true, data: result });
-        } catch (visionErr) {
-          // Vision model rejected the image (too small, invalid format, size limit, etc.)
-          // Fall back to text-only metadata heuristic analysis — never return 500 to the user
-          console.warn('Vision AI rejected image, falling back to metadata analysis:', visionErr.response?.data?.error?.message || visionErr.message);
+        // ── Signal 3: Vision LLM (only for files under 4MB) ──
+        let llmResult = null;
+        const MAX_BASE64_BYTES = 4 * 1024 * 1024;
+        if (buffer.length <= MAX_BASE64_BYTES) {
           try {
-            const fallbackRes = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-              model: 'llama-3.3-70b-versatile',
-              response_format: { type: 'json_object' },
+            const base64Image = buffer.toString('base64');
+            const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+              model: 'meta-llama/llama-4-scout-17b-16e-instruct',
               max_tokens: 256,
-              messages: [
-                { role: 'system', content: 'You are an advanced digital forensics expert. Analyze the filename and extracted metadata strings from this image. Look for structural anomalies, stripped EXIF data, generic software descriptors in place of camera hardware signatures, or subtle XMP/RDF modifications typical of AI pipelines. Evaluate the probability of synthetic generation. Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail your forensic findings>"} ' },
-                { role: 'user', content: `Filename: ${originalname}\nMetadata strings sample: ${strings.substring(0, 2500)}` }
-              ]
+              messages: [{
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: `You are a forensic image analyst. Examine this image ONLY for these specific visual artifacts that indicate AI generation or deepfake manipulation:
+
+1. EYES: Inconsistent specular highlights, unnatural iris patterns, or asymmetric pupils?
+2. TEETH: Unnaturally uniform, overly smooth, or tiled appearance?
+3. HAIR: Blurs into a uniform texture at edges instead of showing individual strands?
+4. SKIN: Repetitive texture tiles, unnaturally smooth regions, or sharp boundaries near face edges?
+5. BACKGROUND: Unrealistic blur gradient, or objects merging unnaturally into faces?
+6. TEXT/LOGOS: Any visible text garbled, distorted, or illegible?
+7. HANDS/FINGERS: Incorrect finger count, merged fingers, or anatomically wrong joints?
+
+BE CONSERVATIVE. Only mark as deepfake if you observe clear, specific artifacts above.
+A natural-looking photo with no artifacts must be marked safe.
+
+RESPOND ONLY IN THIS EXACT JSON FORMAT (no markdown, no extra text):
+{"isPhishing": true/false, "confidence": <integer 50-95>, "explanation": "<list the exact artifacts found, or state why none were found>"}`
+                  },
+                  { type: 'image_url', image_url: { url: `data:${mimetype};base64,${base64Image}` } }
+                ]
+              }]
             }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
-            let fbContent = fallbackRes.data.choices[0].message.content;
-            const fbMatch = fbContent.match(/\{[\s\S]*\}/);
-            const fbResult = fbMatch ? JSON.parse(fbMatch[0]) : JSON.parse(fbContent.replace(/```json/g, '').replace(/```/g, '').trim());
-            return res.json({ success: true, data: fbResult });
-          } catch (fbErr) {
-            console.error('Fallback metadata analysis also failed:', fbErr.message);
-            return res.status(500).json({ error: 'Image analysis failed', details: visionErr.response?.data?.error?.message || visionErr.message });
+
+            const content = groqResponse.data.choices[0].message.content;
+            const jsonMatch = content.match(/\{[\s\S]*\}/);
+            llmResult = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
+            console.log(`[Image] LLM result: deepfake=${llmResult?.isPhishing}, confidence=${llmResult?.confidence}`);
+          } catch (visionErr) {
+            console.warn('[Image] Vision LLM failed, proceeding with heuristics only:', visionErr.response?.data?.error?.message || visionErr.message);
           }
+        } else {
+          console.log(`[Image] File too large for vision LLM (${(buffer.length / 1024 / 1024).toFixed(1)}MB) — heuristics only`);
         }
+
+        // ── Fuse all signals into a single calibrated verdict ──
+        const finalResult = fuseImageSignals({ elaResult, exifResult, llmResult });
+        console.log(`[Image] Fused verdict: deepfake=${finalResult.isPhishing}, confidence=${finalResult.confidence}`);
+        return res.json({ success: true, data: finalResult });
     } 
     else if (mimetype.startsWith('video/')) {
-        // Extract printable strings from first 250KB and last 250KB for better metadata box coverage (moov, udta, XMP)
-        let strings = '';
-        if (buffer.length <= 500000) {
-            strings = buffer.toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-        } else {
-            const startStr = buffer.subarray(0, 250000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-            const endStr = buffer.subarray(buffer.length - 250000).toString('ascii').match(/[ -~]{4,}/g)?.join(' ') || '';
-            strings = startStr + ' ' + endStr;
+        let result;
+        try {
+          // ── Primary: Extract frames and run full visual analysis ──
+          console.log(`[Video] Extracting frames from ${originalname} (${(buffer.length / 1024 / 1024).toFixed(1)}MB)...`);
+          const frames = await extractVideoFrames(buffer, mimetype, 6);
+
+          if (frames.length === 0) {
+            throw new Error('No frames extracted from video');
+          }
+
+          result = await analyzeVideoFrames(frames, groqApiKey);
+          console.log(`[Video] Frame analysis complete: deepfake=${result.isPhishing}, votes=${JSON.stringify(result.frameVotes)}`);
+        } catch (ffmpegErr) {
+          // ── Fallback: metadata-only analysis if frame extraction fails ──
+          console.warn('[Video] Frame extraction failed, using metadata fallback:', ffmpegErr.message);
+          result = await analyzeVideoMetadataFallback(buffer, originalname, groqApiKey);
         }
 
-        // ── LLM metadata analysis with balanced prompt ──
-        const groqVideoResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-          model: 'llama-3.3-70b-versatile',
-          response_format: { type: 'json_object' },
-          messages: [
-             { role: 'system', content: 'You are an elite video forensics analyst evaluating metadata for deepfakes. CRITICAL RULE: Videos shared via WhatsApp, Telegram, or social media intentionally strip camera hardware signatures and compress udta/moov structures for privacy! Therefore, the ABSENCE of camera data or the presence of minimal metadata EXPLICITLY DOES NOT mean it is a deepfake—it is extremely common for authentic compressed videos. Do NOT flag a video as a deepfake just because it lacks hardware signatures or has neat/minimal metadata. Only flag as a deepfake if you find explicitly suspicious strings indicating an AI rendering pipeline (e.g. generative AI blocks, bizarre synthetic renderers). If the metadata is just minimal or uses standard encoders (Lavf, FFmpeg, WhatsApp, default iOS/Android), mark it completely authentic. Return ONLY valid JSON: {"isPhishing": true/false, "confidence": 50-99, "explanation": "<detail anomaly findings>"} ' },
-             { role: 'user', content: `Filename: ${originalname}\nMetadata sample: ${strings.substring(0, 2500)}` }
-          ]
-        }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' }});
-
-        let content = groqVideoResponse.data.choices[0].message.content;
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        const result = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
         return res.json({ success: true, data: result });
     }
 
