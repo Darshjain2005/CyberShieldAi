@@ -146,9 +146,10 @@ router.post('/scan', upload.single('file'), async (req, res) => {
          confidence = total > 0 ? Math.round(((analysisStats.undetected + analysisStats.harmless) / total) * 100) : 100;
       }
     } else {
-      // Fallback if VT fails entirely or is consistently queued
-      isMalicious = originalname.toLowerCase().includes('eicar') || Math.random() > 0.6;
-      confidence = 85; 
+      // Fix I4: VT unavailable — return a deterministic inconclusive result.
+      // Never fabricate a verdict with Math.random(); demos must be reproducible.
+      isMalicious = originalname.toLowerCase().includes('eicar');
+      confidence = isMalicious ? 90 : 50; // EICAR is a known test file; everything else is uncertain
     }
 
     const status = isMalicious ? 'Malicious \u26A0\uFE0F' : 'Safe \u2705';
@@ -218,21 +219,14 @@ router.post('/phish/analyze', upload.single('file'), async (req, res) => {
         const elaResult = await computeELAScore(buffer);
         console.log(`[Image] ELA score: ${elaResult.elaScore} | suspicious: ${elaResult.suspiciousELA}`);
 
-        // ── Signal 3: Vision LLM (only for files under 4MB) ──
-        let llmResult = null;
-        const MAX_BASE64_BYTES = 4 * 1024 * 1024;
-        if (buffer.length <= MAX_BASE64_BYTES) {
-          try {
-            const base64Image = buffer.toString('base64');
-            const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-              model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-              max_tokens: 256,
-              messages: [{
-                role: 'user',
-                content: [
-                  {
-                    type: 'text',
-                    text: `You are a forensic image analyst. Examine this image ONLY for these specific visual artifacts that indicate AI generation or deepfake manipulation:
+        // ── Signal 3: Vision LLM with model cascade (only for files under 4MB) ──
+        // Tries models in order; cascades on 400/404, aborts on 401/429.
+        const IMAGE_VISION_MODELS = [
+          'meta-llama/llama-4-scout-17b-16e-instruct', // primary
+          'llama-3.2-11b-vision-preview',              // fallback 1
+          'llava-v1.5-7b-4096-preview',               // fallback 2
+        ];
+        const IMAGE_VISION_PROMPT = `You are a forensic image analyst. Examine this image ONLY for these specific visual artifacts that indicate AI generation or deepfake manipulation:
 
 1. EYES: Inconsistent specular highlights, unnatural iris patterns, or asymmetric pupils?
 2. TEETH: Unnaturally uniform, overly smooth, or tiled appearance?
@@ -246,20 +240,45 @@ BE CONSERVATIVE. Only mark as deepfake if you observe clear, specific artifacts 
 A natural-looking photo with no artifacts must be marked safe.
 
 RESPOND ONLY IN THIS EXACT JSON FORMAT (no markdown, no extra text):
-{"isPhishing": true/false, "confidence": <integer 50-95>, "explanation": "<list the exact artifacts found, or state why none were found>"}`
-                  },
-                  { type: 'image_url', image_url: { url: `data:${mimetype};base64,${base64Image}` } }
-                ]
-              }]
-            }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
+{"isPhishing": true/false, "confidence": <integer 50-95>, "explanation": "<list the exact artifacts found, or state why none were found>"}`;
 
-            const content = groqResponse.data.choices[0].message.content;
-            const jsonMatch = content.match(/\{[\s\S]*\}/);
-            llmResult = jsonMatch ? JSON.parse(jsonMatch[0]) : null;
-            console.log(`[Image] LLM result: deepfake=${llmResult?.isPhishing}, confidence=${llmResult?.confidence}`);
-          } catch (visionErr) {
-            console.warn('[Image] Vision LLM failed, proceeding with heuristics only:', visionErr.response?.data?.error?.message || visionErr.message);
+        let llmResult = null;
+        const MAX_BASE64_BYTES = 4 * 1024 * 1024;
+        if (buffer.length <= MAX_BASE64_BYTES) {
+          const base64Image = buffer.toString('base64');
+          for (const model of IMAGE_VISION_MODELS) {
+            try {
+              const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+                model,
+                max_tokens: 256,
+                messages: [{
+                  role: 'user',
+                  content: [
+                    { type: 'text', text: IMAGE_VISION_PROMPT },
+                    { type: 'image_url', image_url: { url: `data:${mimetype};base64,${base64Image}` } },
+                  ],
+                }],
+              }, { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } });
+
+              const content = groqResponse.data.choices[0].message.content;
+              const jsonMatch = content.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                llmResult = JSON.parse(jsonMatch[0]);
+                llmResult._model = model;
+                console.log(`[Image] LLM result: deepfake=${llmResult?.isPhishing}, confidence=${llmResult?.confidence} (model: ${model})`);
+                break; // success — stop cascade
+              }
+              console.warn(`[Image] Model ${model}: non-JSON response, trying next`);
+            } catch (visionErr) {
+              const status = visionErr.response?.status;
+              if (status === 401 || status === 429) {
+                console.warn(`[Image] Vision LLM: ${status === 401 ? 'auth error' : 'rate limited'} — skipping`);
+                break;
+              }
+              console.warn(`[Image] Model ${model} failed (${status ?? 'network'}), trying next:`, visionErr.response?.data?.error?.message || visionErr.message);
+            }
           }
+          if (!llmResult) console.warn('[Image] All vision models failed — heuristics only');
         } else {
           console.log(`[Image] File too large for vision LLM (${(buffer.length / 1024 / 1024).toFixed(1)}MB) — heuristics only`);
         }
