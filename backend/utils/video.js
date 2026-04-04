@@ -7,52 +7,81 @@ import axios from 'axios';
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
+// Keywords that indicate the LLM reasoned the content is AI-generated,
+// even if it returned isPhishing: false (catches the "gorilla" case)
+const AI_REASONING_KEYWORDS = [
+  'generated', 'rendered', 'synthetic', 'cgi', 'computer-generated',
+  'ai-generated', 'artificial', 'animation', 'animated', 'virtual',
+  'not photorealistic', 'not a real', 'does not appear real',
+  'appears to be created', 'digitally created', 'looks artificial',
+  'looks generated', 'looks rendered', 'suggests it is generated',
+  'suggesting it is generated', 'suggesting it was generated',
+  'suggesting it is a generated', 'not captured', 'not photographed',
+  'simulated', 'stylized', 'unrealistic lighting', 'unnatural'
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
-// PASS 1 — Authenticity check: "Does this look like a REAL photograph/video?"
-// Asking affirmatively for REAL signals is more reliable than asking for fake ones.
+// PASS 1 — General AI-generation check (covers humans, animals, objects, scenes)
 // ─────────────────────────────────────────────────────────────────────────────
-const AUTHENTICITY_CHECK_PROMPT = `You are a forensic media analyst. Examine this video frame and assess whether it shows a REAL, physically-captured image of a person — or whether it shows signs of being AI-generated or face-swapped.
+const GENERAL_AI_DETECTION_PROMPT = `You are a forensic video analyst detecting AI-generated or synthetic content.
 
-Look for these AUTHENTICITY MARKERS that real captured media has:
-- Natural, randomised skin pore texture with imperfections
-- Realistic, physics-correct hair with individual strand variation
-- Eyes with natural, asymmetric catch-lights and visible capillaries near the edges
-- Natural micro-expression lines (wrinkles, blemishes)
-- Consistent, physically-accurate specular lighting across all facial features
-- Natural motion blur or film grain consistent with real camera capture
+Your job is to determine whether this video frame was captured by a real camera, or whether it was AI-generated, CGI-rendered, or digitally synthesized in any way.
 
-Also look for these DEEPFAKE TELLS present in AI-generated or face-swapped media:
-- Skin that looks airbrushed, waxy, or overly uniform
-- Face boundaries that appear softer or with a slight halo compared to the rest of the image
-- Eyes that look glassy, flat, or with identical reflections
-- Hair that becomes a fuzzy blob near the face boundary (common face-swap artifact)
-- Jaw/neck inconsistency — face texture doesn't match neck skin
-- Lighting on the face doesn't match lighting in the background or on other body parts
-- Teeth that look tiled, too uniform, or overly bright
-- Background warping or distortion near the face edges
+This applies to ALL content types — it does NOT matter whether the frame shows:
+- Humans (face swaps, deepfakes)
+- Animals (AI-generated creatures, CG animals)
+- Scenes (AI-generated landscapes, synthetic environments)
+- Any other subject matter
 
-IMPORTANT: Modern deepfakes are very convincing. If you see even subtle signs of the above deepfake tells — especially face boundary softness, skin airbrushing, or lighting mismatch — flag it. Do NOT require multiple obvious artifacts.
+Examine the frame for these AUTHENTICITY MARKERS of real captured footage:
+- Film grain, sensor noise, or natural motion blur (real cameras always produce these)
+- Physically accurate, uneven, imperfect surface textures (real fur, skin, concrete, fabric)
+- Natural, irregular specular highlights on surfaces
+- Consistent, physically plausible depth-of-field and bokeh
+- Realistic, slightly imperfect geometry (real objects aren't perfect)
+- Natural lighting interactions — shadows, subsurface scattering, ambient occlusion
+
+And these RED FLAGS of AI/CGI generation:
+- Unnaturally smooth, "clean" or overly detailed textures without natural variation
+- Lighting that looks artificially uniform or comes from no discernible source
+- Geometry that looks too perfect or slightly "floaty"
+- Fur, hair or cloth that looks computed rather than physically simulated
+- Background elements that lack natural depth, grain or atmospheric haze
+- An overall "painted" or "rendered" aesthetic quality
+- Subjects or objects that violate physical plausibility (e.g. perfect symmetry)
+
+IMPORTANT: You MUST give a verdict. If ANY element of the frame looks synthetic, generated, or rendered rather than filmed — even slightly — flag it as deepfake/AI-generated. Modern AI video is very convincing; err on the side of flagging.
+
+RESPOND ONLY IN THIS EXACT JSON FORMAT (no markdown, no extra text):
+{"isPhishing": true/false, "confidence": <integer 55-95>, "explanation": "<describe what you found for each category — textures, lighting, geometry, overall aesthetic. State explicitly whether this looks filmed or generated.>"}`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASS 2 — Targeted second opinion on the most suspicious frames
+// ─────────────────────────────────────────────────────────────────────────────
+const SECOND_OPINION_PROMPT = `You are reviewing a video frame that a first analysis system flagged as potentially AI-generated or synthetic. Give your independent assessment.
+
+Examine the frame carefully and answer: Was this frame captured by a real camera, or was it AI-generated / CGI-rendered?
+
+Focus on:
+1. PHYSICS: Do lighting, shadows, reflections, and materials follow real-world physics? Or do they look computed?
+2. TEXTURE QUALITY: Do surfaces (skin, fur, fabric, ground) have natural micro-detail and imperfections, or do they look generated?
+3. OVERALL FEEL: Does the image have the "weight" of a real photograph, or does it feel like a render from a game engine, AI model, or CGI pipeline?
+4. SUBJECT PLAUSIBILITY: Does the subject (human, animal, object, scene) look physically real, or does it look like an AI's idea of what something looks like?
+
+Give your honest verdict. Do not defer to what the previous system said.
 
 RESPOND ONLY IN THIS EXACT JSON FORMAT:
-{"isPhishing": true/false, "confidence": <integer 55-95>, "explanation": "<describe exactly what you found or did not find for each category>"}`;
+{"isPhishing": true/false, "confidence": <integer 55-95>, "explanation": "<your independent assessment on each point above>"}`;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PASS 2 — Deep face analysis: second opinion focusing purely on face region
-// ─────────────────────────────────────────────────────────────────────────────
-const FACE_FORENSICS_PROMPT = `You are analyzing a video frame specifically for face-swap deepfake artifacts. Focus exclusively on the primary face in this frame.
-
-Check for these specific face-swap signatures:
-1. FACE BOUNDARY: Is there a subtle softness, halo, blending artifact, or color temperature difference at the edge where the face meets the neck/hair/background?
-2. SKIN CONSISTENCY: Does the face skin texture match the neck and ears? Deepfakes often have smoother face skin than surrounding areas.
-3. EYE REFLECTIONS: Do both eyes show the same identical light reflection pattern? Identical catchlights are a GAN artifact — real eyes have slight variation.
-4. FACIAL GEOMETRY: Does the face look slightly "flat" or like it's a 2D texture mapped onto a 3D shape?
-5. TEMPORAL ARTIFACTS: Does anything look blurred in an unnatural way — like the face was composited from a different video?
-6. INNER MOUTH: If visible, do the teeth and gums look natural, or do they look like generic AI-generated teeth?
-
-Be aggressive in detection. If the face boundary looks even slightly unusual, or if the skin looks too smooth, flag it. It is better to flag a natural photo as suspicious than to miss a deepfake.
-
-RESPOND ONLY IN THIS EXACT JSON FORMAT:
-{"isPhishing": true/false, "confidence": <integer 55-95>, "explanation": "<describe each check result in 1-2 sentences>"}`;
+/**
+ * Checks whether the LLM's own explanation text contains AI-generation language,
+ * even if it returned isPhishing: false. This catches the case where the model
+ * correctly reasons the content is synthetic but votes wrong due to prompt framing.
+ */
+function explanationImpliesAI(explanation = '') {
+  const lower = explanation.toLowerCase();
+  return AI_REASONING_KEYWORDS.some(kw => lower.includes(kw));
+}
 
 /**
  * Extracts N evenly-spaced frames from a video buffer using ffmpeg.
@@ -68,9 +97,7 @@ export async function extractVideoFrames(buffer, mimetype, numFrames = 6) {
 
   return new Promise((resolve, reject) => {
     ffmpeg.ffprobe(inputPath, (probeErr, metadata) => {
-      if (probeErr) {
-        console.warn('[Video] ffprobe failed:', probeErr.message, '— using default duration');
-      }
+      if (probeErr) console.warn('[Video] ffprobe warning:', probeErr.message);
       const duration = metadata?.format?.duration || 10;
       const fps = numFrames / Math.max(duration, 1);
 
@@ -78,18 +105,16 @@ export async function extractVideoFrames(buffer, mimetype, numFrames = 6) {
         .outputOptions([
           `-vf fps=${fps.toFixed(6)}`,
           '-vframes', String(numFrames),
-          '-q:v', '2'   // highest quality JPEG
+          '-q:v', '2'
         ])
         .output(framePattern)
         .on('end', () => {
           const frames = [];
           for (let i = 1; i <= numFrames; i++) {
             const framePath = path.join(tmpDir, `frame-${String(i).padStart(3, '0')}.jpg`);
-            if (fs.existsSync(framePath)) {
-              frames.push(fs.readFileSync(framePath));
-            }
+            if (fs.existsSync(framePath)) frames.push(fs.readFileSync(framePath));
           }
-          fs.rmSync(tmpDir, { recursive: true, force: true });
+          try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
           console.log(`[Video] Extracted ${frames.length}/${numFrames} frames from ${duration.toFixed(1)}s video`);
           resolve(frames);
         })
@@ -103,8 +128,7 @@ export async function extractVideoFrames(buffer, mimetype, numFrames = 6) {
 }
 
 /**
- * Runs a single LLM vision call on a frame buffer with a given prompt.
- * Returns parsed JSON result or null on failure.
+ * Runs a single LLM vision call on a frame buffer.
  */
 async function runFrameAnalysis(frameBuffer, prompt, groqApiKey, label) {
   const base64 = frameBuffer.toString('base64');
@@ -113,7 +137,7 @@ async function runFrameAnalysis(frameBuffer, prompt, groqApiKey, label) {
       'https://api.groq.com/openai/v1/chat/completions',
       {
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-        max_tokens: 300,
+        max_tokens: 350,
         messages: [{
           role: 'user',
           content: [
@@ -123,10 +147,7 @@ async function runFrameAnalysis(frameBuffer, prompt, groqApiKey, label) {
         }]
       },
       {
-        headers: {
-          'Authorization': `Bearer ${groqApiKey}`,
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' },
         timeout: 30000
       }
     );
@@ -135,138 +156,124 @@ async function runFrameAnalysis(frameBuffer, prompt, groqApiKey, label) {
     const match = content.match(/\{[\s\S]*\}/);
     if (match) {
       const parsed = JSON.parse(match[0]);
+
+      // Key fix: if LLM voted false but its own explanation implies AI generation,
+      // override the vote. The LLM can reason correctly but vote wrong due to prompt framing.
+      if (!parsed.isPhishing && explanationImpliesAI(parsed.explanation)) {
+        console.log(`[Video][${label}] ⚡ Explanation override: LLM said clean but explanation implies AI — flipping to deepfake`);
+        parsed.isPhishing = true;
+        parsed.confidence = Math.max(parsed.confidence || 65, 65);
+        parsed.explanation = `[Auto-flagged from reasoning] ${parsed.explanation}`;
+      }
+
       console.log(`[Video][${label}] deepfake=${parsed.isPhishing}, confidence=${parsed.confidence}`);
       return parsed;
     }
   } catch (e) {
-    console.warn(`[Video][${label}] Analysis failed:`, e.response?.data?.error?.message || e.message);
+    console.warn(`[Video][${label}] Failed:`, e.response?.data?.error?.message || e.message);
   }
   return null;
 }
 
 /**
- * Analyzes video frames using a dual-pass approach:
- * Pass 1 — Authenticity check on a sample of frames
- * Pass 2 — Deep face forensics on the 2 most "suspicious" frames from pass 1
- *
- * Verdict logic:
- * - ANY frame flagged in BOTH passes → high confidence deepfake
- * - ANY frame flagged in pass 1 with confidence ≥ 70 → likely deepfake
- * - Temporal inconsistency (mixed results) → suspicious, escalate confidence
+ * Dual-pass video frame analysis.
+ * Pass 1: General AI-generation check on a sample of frames (covers human AND non-human content)
+ * Pass 2: Second opinion on the flagged (or first 2) frames
  */
 export async function analyzeVideoFrames(frameBuffers, groqApiKey) {
-  // ── PASS 1: Authenticity check on up to 4 evenly sampled frames ──
+  // ── PASS 1: General AI detection on up to 4 evenly sampled frames ──
   const step = Math.max(1, Math.ceil(frameBuffers.length / 4));
   const pass1Frames = frameBuffers.filter((_, i) => i % step === 0).slice(0, 4);
 
-  console.log(`[Video] Pass 1: Authenticity check on ${pass1Frames.length} frames...`);
+  console.log(`[Video] Pass 1: General AI detection on ${pass1Frames.length} frames...`);
   const pass1Results = [];
   for (let i = 0; i < pass1Frames.length; i++) {
-    const result = await runFrameAnalysis(pass1Frames[i], AUTHENTICITY_CHECK_PROMPT, groqApiKey, `P1-F${i + 1}`);
+    const result = await runFrameAnalysis(pass1Frames[i], GENERAL_AI_DETECTION_PROMPT, groqApiKey, `P1-F${i + 1}`);
     if (result) pass1Results.push({ frame: pass1Frames[i], result, index: i });
   }
 
   if (pass1Results.length === 0) {
-    return {
-      isPhishing: false,
-      confidence: 50,
-      explanation: 'Frame analysis inconclusive — no frames could be processed'
-    };
+    return { isPhishing: false, confidence: 50, explanation: 'Frame analysis inconclusive — no frames could be processed' };
   }
 
-  const p1DeepfakeResults = pass1Results.filter(r => r.result.isPhishing);
-  const p1TotalVotes = pass1Results.length;
-  const p1DeepfakeVotes = p1DeepfakeResults.length;
+  const p1Flagged = pass1Results.filter(r => r.result.isPhishing);
+  const p1Total = pass1Results.length;
+  const p1FlaggedCount = p1Flagged.length;
 
-  // ── PASS 2: Deep face forensics on any flagged frames (+ highest confidence clean frame) ──
-  // We run pass 2 regardless — on the frames that were flagged, or the first 2 if none flagged
-  const pass2Candidates = p1DeepfakeResults.length > 0
-    ? p1DeepfakeResults.slice(0, 2)   // The flagged ones
-    : pass1Results.slice(0, 2);        // None flagged — still double-check the first 2
+  // ── PASS 2: Second opinion on flagged frames (or first 2 if nothing flagged) ──
+  const pass2Candidates = p1FlaggedCount > 0
+    ? p1Flagged.slice(0, 2)
+    : pass1Results.slice(0, 2);
 
-  console.log(`[Video] Pass 2: Deep face forensics on ${pass2Candidates.length} frames...`);
+  console.log(`[Video] Pass 2: Second opinion on ${pass2Candidates.length} frames...`);
   const pass2Results = [];
   for (const candidate of pass2Candidates) {
-    const result = await runFrameAnalysis(candidate.frame, FACE_FORENSICS_PROMPT, groqApiKey, `P2-F${candidate.index + 1}`);
+    const result = await runFrameAnalysis(candidate.frame, SECOND_OPINION_PROMPT, groqApiKey, `P2-F${candidate.index + 1}`);
     if (result) pass2Results.push(result);
   }
 
-  // ── VERDICT LOGIC ──
-  const p2DeepfakeVotes = pass2Results.filter(r => r.isPhishing).length;
+  // ── VERDICT ──
+  const p2FlaggedCount = pass2Results.filter(r => r.isPhishing).length;
+  const isTemporallyInconsistent = p1FlaggedCount > 0 && p1FlaggedCount < p1Total;
+
   const allConfidences = [
     ...pass1Results.map(r => r.result.confidence || 70),
     ...pass2Results.map(r => r.confidence || 70)
   ];
   const avgConfidence = Math.round(allConfidences.reduce((a, b) => a + b, 0) / allConfidences.length);
 
-  // Temporal inconsistency = some frames clean, some not → suspicious
-  const isTemporallyInconsistent = p1DeepfakeVotes > 0 && p1DeepfakeVotes < p1TotalVotes;
-
-  // Decision tree:
   let isDeepfake = false;
   let finalConfidence = avgConfidence;
-  let verdict_reason = '';
+  let verdictReason = '';
 
-  if (p1DeepfakeVotes > 0 && p2DeepfakeVotes > 0) {
-    // Both passes agree on at least one frame — high confidence
+  if (p1FlaggedCount > 0 && p2FlaggedCount > 0) {
     isDeepfake = true;
     finalConfidence = Math.min(avgConfidence + 10, 95);
-    verdict_reason = `Both analysis passes flagged deepfake artifacts. `;
-  } else if (p1DeepfakeVotes > 0) {
-    // Only pass 1 flagged — check the confidence
-    const maxP1Conf = Math.max(...p1DeepfakeResults.map(r => r.result.confidence || 70));
-    if (maxP1Conf >= 68) {
-      // High confidence flag from pass 1 alone is enough
-      isDeepfake = true;
-      finalConfidence = avgConfidence;
-      verdict_reason = `Authenticity check flagged suspicious artifacts (confidence ${maxP1Conf}%). `;
-    } else {
-      // Low confidence flag — uncertain, mark suspicious but not conclusive
-      isDeepfake = false;
-      finalConfidence = Math.max(avgConfidence, 60);
-      verdict_reason = `Authenticity check raised low-confidence concerns. `;
-    }
-  } else if (p2DeepfakeVotes > 0) {
-    // Only the deeper face forensics caught something
+    verdictReason = `Both analysis passes confirmed AI-generated content. `;
+  } else if (p1FlaggedCount > 0) {
+    const maxConf = Math.max(...p1Flagged.map(r => r.result.confidence || 70));
+    isDeepfake = maxConf >= 65;
+    finalConfidence = avgConfidence;
+    verdictReason = isDeepfake
+      ? `AI-generation detected (confidence ${maxConf}%). `
+      : `Weak AI-generation signal detected (confidence ${maxConf}%). `;
+  } else if (p2FlaggedCount > 0) {
     isDeepfake = true;
     finalConfidence = Math.min(avgConfidence + 5, 90);
-    verdict_reason = `Deep face forensics detected subtle face-swap artifacts. `;
+    verdictReason = `Second-pass analysis detected AI-generation artifacts. `;
   } else {
-    isDeepfake = false;
-    verdict_reason = `Both analysis passes found no deepfake artifacts. `;
+    verdictReason = `Both passes found no AI-generation artifacts. `;
   }
 
   if (isTemporallyInconsistent) {
-    verdict_reason += '⚠️ Temporal inconsistency detected across frames — possible localized face substitution. ';
-    if (!isDeepfake) {
-      // Inconsistency alone is suspicious enough to flag
-      isDeepfake = true;
-      finalConfidence = Math.max(finalConfidence, 67);
-    } else {
-      finalConfidence = Math.min(finalConfidence + 8, 95);
-    }
+    verdictReason += '⚠️ Temporal inconsistency across frames detected. ';
+    if (!isDeepfake) { isDeepfake = true; finalConfidence = Math.max(finalConfidence, 67); }
+    else { finalConfidence = Math.min(finalConfidence + 8, 95); }
   }
 
-  // Collect all artifact explanations
   const artifactDetails = [
     ...pass1Results.filter(r => r.result.isPhishing).map(r => `[Frame ${r.index + 1}]: ${r.result.explanation}`),
-    ...pass2Results.filter(r => r.isPhishing).map((r, i) => `[Face check ${i + 1}]: ${r.explanation}`)
+    ...pass2Results.filter(r => r.isPhishing).map((r, i) => `[Pass 2 frame ${i + 1}]: ${r.explanation}`)
   ].join(' | ');
+
+  // If clean, still surface what the LLM saw
+  const cleanDetail = !isDeepfake && pass1Results[0]?.result?.explanation
+    ? pass1Results[0].result.explanation
+    : '';
 
   return {
     isPhishing: isDeepfake,
     confidence: finalConfidence,
-    explanation: verdict_reason + (artifactDetails || (isDeepfake ? '' : pass1Results[0]?.result?.explanation || '')),
+    explanation: verdictReason + (artifactDetails || cleanDetail),
     frameVotes: {
-      pass1: { deepfake: p1DeepfakeVotes, clean: p1TotalVotes - p1DeepfakeVotes, total: p1TotalVotes },
-      pass2: { deepfake: p2DeepfakeVotes, clean: pass2Results.length - p2DeepfakeVotes, total: pass2Results.length }
+      pass1: { deepfake: p1FlaggedCount, clean: p1Total - p1FlaggedCount, total: p1Total },
+      pass2: { deepfake: p2FlaggedCount, clean: pass2Results.length - p2FlaggedCount, total: pass2Results.length }
     }
   };
 }
 
 /**
- * Fallback: metadata heuristics + structural checks when frame extraction is unavailable.
- * More aggressive than the old version — looks for encoding anomalies too.
+ * Fallback when frame extraction fails — metadata heuristics + LLM.
  */
 export async function analyzeVideoMetadataFallback(buffer, originalname, groqApiKey) {
   let strings = '';
@@ -278,22 +285,15 @@ export async function analyzeVideoMetadataFallback(buffer, originalname, groqApi
     strings = startStr + ' ' + endStr;
   }
 
-  // Look for explicit AI pipeline strings directly in metadata before even calling the LLM
   const AI_SIGNATURES = [
-    'stable-diffusion', 'stablediffusion', 'midjourney', 'deepfacelab',
-    'faceswap', 'neural-render', 'diffusion-model', 'gan-generated',
-    'runwayml', 'runway ml', 'pika labs', 'sora', 'kling', 'hailuo',
-    'reface', 'avatarify', 'faceit', 'deepfakes', 'first-order-model'
+    'stable-diffusion', 'stablediffusion', 'midjourney', 'deepfacelab', 'faceswap',
+    'neural-render', 'diffusion-model', 'gan-generated', 'runwayml', 'runway ml',
+    'pika labs', 'sora', 'kling', 'hailuo', 'reface', 'avatarify', 'deepfakes'
   ];
-
   const lowerStrings = strings.toLowerCase();
   const foundSig = AI_SIGNATURES.find(sig => lowerStrings.includes(sig));
   if (foundSig) {
-    return {
-      isPhishing: true,
-      confidence: 92,
-      explanation: `[Metadata] Explicit AI generation signature found: "${foundSig}"`
-    };
+    return { isPhishing: true, confidence: 92, explanation: `[Metadata] Explicit AI signature found: "${foundSig}"` };
   }
 
   const groqRes = await axios.post(
@@ -304,19 +304,9 @@ export async function analyzeVideoMetadataFallback(buffer, originalname, groqApi
       messages: [
         {
           role: 'system',
-          content:
-            'You are a video forensics analyst. Examine these metadata strings extracted from a video file.\n' +
-            'Common encoders (FFmpeg, Lavf, LibAV, WhatsApp, iOS, Android H.264) are completely normal.\n' +
-            'Flag as suspicious ONLY if you find: AI/GAN renderer signatures, deepfake tool names, ' +
-            'unusual synthetic framerates (e.g. exactly 25.000000 fps with no variation), ' +
-            'or metadata fields that reference neural network pipelines.\n' +
-            'NOTE: Frame extraction from this video failed, so this is the only available signal.\n' +
-            'Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-85, "explanation": "<your findings>"}'
+          content: 'You are a video forensics analyst. Examine these metadata strings. Common encoders (FFmpeg, Lavf, WhatsApp, iOS, Android) are normal. Only flag if you find explicit AI/GAN/deepfake tool signatures. Respond ONLY in valid JSON: {"isPhishing": true/false, "confidence": 50-85, "explanation": "<findings>"}'
         },
-        {
-          role: 'user',
-          content: `Filename: ${originalname}\nMetadata: ${strings.substring(0, 2500)}`
-        }
+        { role: 'user', content: `Filename: ${originalname}\nMetadata: ${strings.substring(0, 2500)}` }
       ]
     },
     { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } }
@@ -324,12 +314,8 @@ export async function analyzeVideoMetadataFallback(buffer, originalname, groqApi
 
   const content = groqRes.data.choices[0].message.content;
   const match = content.match(/\{[\s\S]*\}/);
-  const result = match
-    ? JSON.parse(match[0])
-    : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
-
-  result.explanation = '[⚠️ Frame extraction unavailable — metadata analysis only] ' + result.explanation;
-  // Cap confidence for metadata-only results — it's a weaker signal
+  const result = match ? JSON.parse(match[0]) : JSON.parse(content.replace(/```json/g, '').replace(/```/g, '').trim());
+  result.explanation = '[⚠️ Frame extraction unavailable — metadata only] ' + result.explanation;
   result.confidence = Math.min(result.confidence || 60, 78);
   return result;
 }
